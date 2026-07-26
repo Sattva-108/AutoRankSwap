@@ -40,11 +40,11 @@ local MAX_SLOTS = 120 -- 10 standard bars × 12 slots
 -- State
 ---------------------------------------------------------------------------
 ARS.cdWatching = {}
-ARS.cdServerDebuffs = {}
+ARS.cdServerDebuffs = {}  -- persisted in SavedVariables
 ARS.spellBookCache = {}   -- [spellName] = { { rank, rankNum, bookIndex }, ... }
-ARS.pendingSwaps = {}     -- [actionSlot] = { ... }
-ARS.pendingRestores = {}  -- [actionSlot] = { ... }
-ARS.ignoredBars = {}      -- [barNum] = true
+ARS.pendingSwaps = {}     -- persisted in SavedVariables [actionSlot] = { ... }
+ARS.pendingRestores = {}  -- volatile, not persisted
+ARS.ignoredBars = {}      -- persisted in SavedVariables
 
 local cdMonitorFrame
 local ARSDB
@@ -61,23 +61,36 @@ end
 ---------------------------------------------------------------------------
 -- SavedVariables helpers
 ---------------------------------------------------------------------------
-local function LoadIgnoredBars()
-	wipe(ARS.ignoredBars)
-	if ARSDB and ARSDB.ignoredBars then
-		for _, v in pairs(ARSDB.ignoredBars) do
-			ARS.ignoredBars[v] = true
-		end
-	end
-end
-
-local function SaveIgnoredBars()
+local function SaveDB()
 	if not ARSDB then return end
+	ARSDB.pendingSwaps = ARS.pendingSwaps
+	ARSDB.cdServerDebuffs = ARS.cdServerDebuffs
 	ARSDB.ignoredBars = ARSDB.ignoredBars or {}
 	wipe(ARSDB.ignoredBars)
 	local i = 1
 	for barNum in pairs(ARS.ignoredBars) do
 		ARSDB.ignoredBars[i] = barNum
 		i = i + 1
+	end
+end
+
+local function LoadDB()
+	AutoRankSwapDB = AutoRankSwapDB or {}
+	ARSDB = AutoRankSwapDB
+
+	-- Initialize persistent state tables
+	ARSDB.pendingSwaps = ARSDB.pendingSwaps or {}
+	ARSDB.cdServerDebuffs = ARSDB.cdServerDebuffs or {}
+	ARSDB.ignoredBars = ARSDB.ignoredBars or {}
+
+	-- Point ARS state directly at the DB tables (persists across /reload)
+	ARS.pendingSwaps = ARSDB.pendingSwaps
+	ARS.cdServerDebuffs = ARSDB.cdServerDebuffs
+	ARS.ignoredBars = {}
+	if ARSDB.ignoredBars then
+		for _, v in pairs(ARSDB.ignoredBars) do
+			ARS.ignoredBars[v] = true
+		end
 	end
 end
 
@@ -291,6 +304,7 @@ local function PerformSwap(actionSlot, newBookIndex)
 		PlaceAction(actionSlot)
 		ClearCursor()
 		ARS.pendingSwaps[actionSlot].newBookIndex = nil
+		SaveDB()
 		DebugPrint("PerformSwap: SUCCESS - placed on slot " .. actionSlot)
 		return true
 	else
@@ -336,6 +350,7 @@ local function PerformRestore(actionSlot)
 		PlaceAction(actionSlot)
 		ClearCursor()
 		ARS.pendingSwaps[actionSlot] = nil
+		SaveDB()
 		DebugPrint("PerformRestore: SUCCESS - restored on slot " .. actionSlot)
 		return true
 	else
@@ -411,6 +426,7 @@ local function PerformMacroSwap(spellName, lowerRankStr)
 		EditMacro(macroID, nil, nil, newText)
 		ARS.pendingSwaps[slot].lowerRankStr = nil
 		ARS.pendingSwaps[slot].spellName = nil
+		SaveDB()
 		DebugPrint("PerformMacroSwap: SUCCESS - edited macro on slot " .. slot)
 		print(format("|cFF00CCFF[CD Monitor]|r Macro on slot #%d: |cFFFFFFFF%s|r -> |cFFFFFFFF%s(%s)|r", slot, spellName, spellName, lowerRankStr))
 		return true
@@ -449,6 +465,7 @@ local function PerformMacroRestore(slot)
 	DebugPrint("PerformMacroRestore: restoring macro text: " .. tostring(swap.originalMacroText))
 	EditMacro(macroID, nil, nil, swap.originalMacroText)
 	ARS.pendingSwaps[slot] = nil
+	SaveDB()
 	DebugPrint("PerformMacroRestore: SUCCESS - restored macro on slot " .. slot)
 	return true
 end
@@ -458,27 +475,34 @@ end
 ---------------------------------------------------------------------------
 local function ProcessPendingSwaps()
 	if InCombatLockdown() then return end
+	local changed = false
 	for slot, data in pairs(ARS.pendingSwaps) do
 		if data.isMacro then
 			if data.lowerRankStr and data.spellName then
 				DebugPrint("ProcessPendingSwaps: applying queued macro swap slot=" .. slot)
 				local ok = PerformMacroSwap(data.spellName, data.lowerRankStr)
 				if ok then
+					changed = true
 					DebugPrint("ProcessPendingSwaps: macro SUCCESS slot=" .. slot)
 				end
 			end
 			if not data.lowerRankStr and not data.spellName and not data.originalMacroText then
 				ARS.pendingSwaps[slot] = nil
+				changed = true
 			end
 		elseif data.newBookIndex then
 			DebugPrint("ProcessPendingSwaps: applying queued swap slot=" .. slot)
 			local ok = PerformSwap(slot, data.newBookIndex)
 			if ok then
+				changed = true
 				DebugPrint("ProcessPendingSwaps: SUCCESS slot=" .. slot)
 			else
 				DebugPrint("ProcessPendingSwaps: FAILED slot=" .. slot)
 			end
 		end
+	end
+	if changed then
+		SaveDB()
 	end
 end
 
@@ -608,6 +632,7 @@ local function ProcessWatching()
 				if not ARS.cdServerDebuffs[debuffKey] then
 					DebugPrint("ProcessWatching: " .. spellName .. " Rank " .. tostring(castRank) .. " duration=" .. duration)
 					ARS.cdServerDebuffs[debuffKey] = {expiry = now + duration, duration = duration, texture = data[4], rank = castRank, spellName = spellName}
+					SaveDB()
 					Popup_Show(spellName, "DISABLED", {r=1, g=0.2, b=0.2}, data[4])
 					PlaySoundFile("Sound\\Interface\\Error.wav", "Master")
 					print(format("|cFFFF0000[CD Alert]|r |cFFFFFFFF%s|r Rank %s was DISABLED for 2 minutes by server!", spellName, tostring(castRank)))
@@ -657,6 +682,7 @@ end
 
 local function CheckDebuffExpiry()
 	local now = GetTime()
+	local changed = false
 	for debuffKey, data in pairs(ARS.cdServerDebuffs) do
 		local remaining = (data.expiry or 0) - now
 		if remaining <= 0 then
@@ -664,6 +690,7 @@ local function CheckDebuffExpiry()
 
 			-- Remove this debuff
 			ARS.cdServerDebuffs[debuffKey] = nil
+			changed = true
 
 			-- Check if a higher rank is already available
 			local expiredRankNum = ParseSpellRank(data.rank)
@@ -705,6 +732,9 @@ local function CheckDebuffExpiry()
 				end
 			end
 		end
+	end
+	if changed then
+		SaveDB()
 	end
 end
 
@@ -789,6 +819,9 @@ local function CDMonitor_OnEvent(self, event, unit, spell, rank)
 	elseif event == "PLAYER_ENTERING_WORLD" then
 		wipe(ARS.cdWatching)
 		BuildSpellBookCache()
+		-- Startup audit: clean up any stale state from before /reload or logout
+		CheckDebuffExpiry()
+		ValidateMacroRestores()
 		EnsureOnUpdate()
 	elseif event == "PLAYER_REGEN_ENABLED" then
 		ProcessPendingSwaps()
@@ -816,6 +849,7 @@ local function ManualScan()
 				local debuffKey = name .. ":" .. tostring(rank)
 				if name and not ARS.cdServerDebuffs[debuffKey] then
 					ARS.cdServerDebuffs[debuffKey] = {expiry = GetTime() + duration, duration = duration, texture = texture, rank = rank, spellName = name}
+					SaveDB()
 					Popup_Show(name, "DISABLED", {r=1, g=0.2, b=0.2}, texture)
 					PlaySoundFile("Sound\\Interface\\Error.wav", "Master")
 					print(format("|cFFFF0000[CD Alert]|r |cFFFFFFFF%s|r Rank %s was DISABLED for 2 minutes by server!", name, tostring(rank)))
@@ -837,15 +871,13 @@ end
 -- Initialization
 ---------------------------------------------------------------------------
 local function Initialize(self)
-	-- Initialize SavedVariables
-	AutoRankSwapDB = AutoRankSwapDB or {}
-	ARSDB = AutoRankSwapDB
+	-- Initialize SavedVariables (per-character)
+	LoadDB()
 
 	DebugPrint("Auto Rank Swap initializing...")
 
 	CreatePopupFrame()
 	BuildSpellBookCache()
-	LoadIgnoredBars()
 
 	cdMonitorFrame = CreateFrame("Frame", "AutoRankSwapFrame", UIParent)
 	cdMonitorFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
@@ -884,7 +916,7 @@ local function Initialize(self)
 
 		if msg == "clear" then
 			wipe(ARS.ignoredBars)
-			SaveIgnoredBars()
+			SaveDB()
 			print("|cFF00CCFF[CD Monitor]|r All bars cleared from ignore list")
 			return
 		end

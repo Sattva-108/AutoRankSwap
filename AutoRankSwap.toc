@@ -1,0 +1,8 @@
+## Interface: 30300
+## Title: Auto Rank Swap
+## Notes: Monitors 2-min server debuffs on spells and automatically swaps action bar buttons and macros to the next available lower rank.
+## Author: YourName
+## Version: 1.0
+## SavedVariables: AutoRankSwapDB
+
+AutoRankSwap.lua

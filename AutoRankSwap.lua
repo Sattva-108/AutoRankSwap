@@ -418,7 +418,8 @@ local function PerformMacroSwap(spellName, lowerRankStr)
 	-- Replace spell name with spell name + rank in macro text
 	-- ALWAYS use the pristine original text to prevent (Rank 5)(Rank 6) stacking
 	local baseText = ARS.pendingSwaps[slot].originalMacroText or text
-	local newText = gsub(baseText, spellName, spellName .. "(" .. lowerRankStr .. ")")
+	local safeSpellName = spellName:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
+	local newText = gsub(baseText, safeSpellName, spellName .. "(" .. lowerRankStr .. ")")
 	DebugPrint("PerformMacroSwap: old=" .. tostring(text))
 	DebugPrint("PerformMacroSwap: base=" .. tostring(baseText))
 	DebugPrint("PerformMacroSwap: new=" .. tostring(newText))
@@ -781,7 +782,8 @@ local function ValidateMacroRestores()
 
 					if not hasActiveDebuff then
 						-- No active debuff - check if macro still has rank suffix
-						local rankPattern = macroSpell .. "%((.-)%)"
+						local safeSpellName = macroSpell:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
+						local rankPattern = safeSpellName .. "%((.-)%)"
 						local foundRank = text:match(rankPattern)
 						if foundRank then
 							-- Try to restore from stored original text
@@ -795,7 +797,8 @@ local function ValidateMacroRestores()
 								print(format("|cFF00CCFF[CD Monitor]|r Post-combat: fixed macro on slot #%d (restored original)", slot))
 							else
 								-- No stored text: remove the entire (Rank N) pattern
-								local patternToRemove = macroSpell .. "%(" .. foundRank .. "%)"
+								local safeFoundRank = foundRank:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
+								local patternToRemove = safeSpellName .. "%(" .. safeFoundRank .. "%)"
 								local fixedText = gsub(text, patternToRemove, macroSpell)
 								if fixedText ~= text then
 									EditMacro(id, nil, nil, fixedText)

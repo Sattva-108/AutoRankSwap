@@ -94,14 +94,48 @@ local function LoadDB()
 	end
 end
 
--- Map bar number → slot range: Bar1=1-12, Bar2=13-24, ..., Bar10=109-120
+-- Map bar number → slot range, dynamically checking ElvUI button states if present
 local function IsSlotInIgnoredBar(slot)
-	if not slot then return false end
+	if not slot or not next(ARS.ignoredBars) then return false end
+
 	for barNum in pairs(ARS.ignoredBars) do
-		local lo = (barNum - 1) * 12 + 1
-		local hi = barNum * 12
-		if slot >= lo and slot <= hi then
-			return true
+		-- 1. Direct ElvUI button action inspection
+		for i = 1, 12 do
+			local btn = _G["ElvUI_Bar" .. barNum .. "Button" .. i]
+			if btn then
+				local btnSlot = btn:GetAttribute("action") or btn._state_action or btn.action
+				if btnSlot and tonumber(btnSlot) == slot then
+					return true
+				end
+			end
+		end
+
+		-- 2. Fallback WotLK / Blizzard / ElvUI Page-to-Slot Mapping:
+		-- Bar 1 = 1-12   (Main Bar)
+		-- Bar 2 = 49-60  (MultiBarBottomRight)
+		-- Bar 3 = 61-72  (MultiBarBottomLeft)
+		-- Bar 4 = 37-48  (MultiBarLeft)
+		-- Bar 5 = 25-36  (MultiBarRight / ElvUI Bar 5)
+		-- Bar 6 = 13-24  (Action Page 2 / ElvUI Bar 6)
+		local pageMap = {
+			[1] = {1, 12},
+			[2] = {49, 60},
+			[3] = {61, 72},
+			[4] = {37, 48},
+			[5] = {25, 36},
+			[6] = {13, 24},
+		}
+		local range = pageMap[barNum]
+		if range then
+			if slot >= range[1] and slot <= range[2] then
+				return true
+			end
+		else
+			local lo = (barNum - 1) * 12 + 1
+			local hi = barNum * 12
+			if slot >= lo and slot <= hi then
+				return true
+			end
 		end
 	end
 	return false
@@ -365,16 +399,18 @@ end
 ---------------------------------------------------------------------------
 local function FindMacroSlot(spellName)
 	for slot = 1, MAX_SLOTS do
-		local actionType, id = GetActionInfo(slot)
-		if actionType == "macro" and id and id > 0 then
-			local macroSpell = GetMacroSpell(id)
-			if macroSpell == spellName then
-				DebugPrint("FindMacroSlot: slot=" .. slot .. " id=" .. id .. " macroSpell=" .. tostring(macroSpell))
-				return slot, id
+		if not IsSlotInIgnoredBar(slot) then
+			local actionType, id = GetActionInfo(slot)
+			if actionType == "macro" and id and id > 0 then
+				local macroSpell = GetMacroSpell(id)
+				if macroSpell == spellName then
+					DebugPrint("FindMacroSlot: slot=" .. slot .. " id=" .. id .. " macroSpell=" .. tostring(macroSpell))
+					return slot, id
+				end
 			end
 		end
 	end
-	DebugPrint("FindMacroSlot: no macro found for " .. spellName)
+	DebugPrint("FindMacroSlot: no unignored macro found for " .. spellName)
 	return nil, nil
 end
 
@@ -841,28 +877,30 @@ end
 local function ManualScan()
 	DebugPrint("Manual scan: checking all action slots for server debuffs")
 	for slot = 1, MAX_SLOTS do
-		local actionType, id = GetActionInfo(slot)
-		if actionType == "spell" and id and id > 0 then
-			local start, duration = GetSpellCooldown(id, BOOKTYPE_SPELL)
-			start = start or 0
-			duration = duration or 0
-			if duration >= SERVER_DEBUFF_MIN and duration <= SERVER_DEBUFF_MAX then
-				local name, rank = GetSpellName(id, BOOKTYPE_SPELL)
-				local texture = GetSpellTexture(id, BOOKTYPE_SPELL)
-				local debuffKey = name .. ":" .. tostring(rank)
-				if name and not ARS.cdServerDebuffs[debuffKey] then
-					ARS.cdServerDebuffs[debuffKey] = {expiry = GetTime() + duration, duration = duration, texture = texture, rank = rank, spellName = name}
-					SaveDB()
-					Popup_Show(name, "DISABLED", {r=1, g=0.2, b=0.2}, texture)
-					PlaySoundFile("Sound\\Interface\\Error.wav", "Master")
-					print(format("|cFFFF0000[CD Alert]|r |cFFFFFFFF%s|r Rank %s was DISABLED for 2 minutes by server!", name, tostring(rank)))
+		if not IsSlotInIgnoredBar(slot) then
+			local actionType, id = GetActionInfo(slot)
+			if actionType == "spell" and id and id > 0 then
+				local start, duration = GetSpellCooldown(id, BOOKTYPE_SPELL)
+				start = start or 0
+				duration = duration or 0
+				if duration >= SERVER_DEBUFF_MIN and duration <= SERVER_DEBUFF_MAX then
+					local name, rank = GetSpellName(id, BOOKTYPE_SPELL)
+					local texture = GetSpellTexture(id, BOOKTYPE_SPELL)
+					local debuffKey = name .. ":" .. tostring(rank)
+					if name and not ARS.cdServerDebuffs[debuffKey] then
+						ARS.cdServerDebuffs[debuffKey] = {expiry = GetTime() + duration, duration = duration, texture = texture, rank = rank, spellName = name}
+						SaveDB()
+						Popup_Show(name, "DISABLED", {r=1, g=0.2, b=0.2}, texture)
+						PlaySoundFile("Sound\\Interface\\Error.wav", "Master")
+						print(format("|cFFFF0000[CD Alert]|r |cFFFFFFFF%s|r Rank %s was DISABLED for 2 minutes by server!", name, tostring(rank)))
+					end
 				end
-			end
-		elseif actionType == "macro" and id and id > 0 then
-			local macroSpell = GetMacroSpell(id)
-			if macroSpell then
-				-- For macros, we can't easily get cooldown from the action slot directly
-				-- The macro's spell cooldown is tracked through ProcessWatching on cast
+			elseif actionType == "macro" and id and id > 0 then
+				local macroSpell = GetMacroSpell(id)
+				if macroSpell then
+					-- For macros, we can't easily get cooldown from the action slot directly
+					-- The macro's spell cooldown is tracked through ProcessWatching on cast
+				end
 			end
 		end
 	end
@@ -937,7 +975,7 @@ local function Initialize(self)
 				end
 			end
 		end
-		SaveIgnoredBars()
+		SaveDB()
 	end
 
 	DebugPrint("Ready. Use /cdscan, /cdignore")

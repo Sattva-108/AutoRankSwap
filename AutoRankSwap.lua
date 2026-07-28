@@ -45,6 +45,7 @@ ARS.spellBookCache = {}   -- [spellName] = { { rank, rankNum, bookIndex }, ... }
 ARS.pendingSwaps = {}     -- persisted in SavedVariables [actionSlot] = { ... }
 ARS.pendingRestores = {}  -- volatile, not persisted
 ARS.ignoredBars = {}      -- persisted in SavedVariables
+ARS.ignoredSpells = {}    -- persisted in SavedVariables
 
 local cdMonitorFrame
 local ARSDB
@@ -65,12 +66,27 @@ local function SaveDB()
 	if not ARSDB then return end
 	ARSDB.pendingSwaps = ARS.pendingSwaps
 	ARSDB.cdServerDebuffs = ARS.cdServerDebuffs
+
 	ARSDB.ignoredBars = ARSDB.ignoredBars or {}
-	wipe(ARSDB.ignoredBars)
-	local i = 1
+	local bars = {}
 	for barNum in pairs(ARS.ignoredBars) do
-		ARSDB.ignoredBars[i] = barNum
-		i = i + 1
+		tinsert(bars, barNum)
+	end
+	wipe(ARSDB.ignoredBars)
+	for _, barNum in ipairs(bars) do
+		ARSDB.ignoredBars[#ARSDB.ignoredBars + 1] = barNum
+	end
+
+	ARSDB.ignoredSpells = ARSDB.ignoredSpells or {}
+	local spells = {}
+	for spellName in pairs(ARS.ignoredSpells) do
+		if type(spellName) == "string" then
+			tinsert(spells, spellName)
+		end
+	end
+	wipe(ARSDB.ignoredSpells)
+	for _, spellName in ipairs(spells) do
+		ARSDB.ignoredSpells[#ARSDB.ignoredSpells + 1] = spellName
 	end
 end
 
@@ -82,6 +98,7 @@ local function LoadDB()
 	ARSDB.pendingSwaps = ARSDB.pendingSwaps or {}
 	ARSDB.cdServerDebuffs = ARSDB.cdServerDebuffs or {}
 	ARSDB.ignoredBars = ARSDB.ignoredBars or {}
+	ARSDB.ignoredSpells = ARSDB.ignoredSpells or {}
 
 	-- Point ARS state directly at the DB tables (persists across /reload)
 	ARS.pendingSwaps = ARSDB.pendingSwaps
@@ -90,6 +107,12 @@ local function LoadDB()
 	if ARSDB.ignoredBars then
 		for _, v in pairs(ARSDB.ignoredBars) do
 			ARS.ignoredBars[v] = true
+		end
+	end
+	ARS.ignoredSpells = {}
+	for _, spellName in ipairs(ARSDB.ignoredSpells or {}) do
+		if type(spellName) == "string" then
+			ARS.ignoredSpells[spellName] = true
 		end
 	end
 end
@@ -136,6 +159,18 @@ local function IsSlotInIgnoredBar(slot)
 			if slot >= lo and slot <= hi then
 				return true
 			end
+		end
+	end
+	return false
+end
+
+-- Check if a spell matches any blacklisted full or partial spell name
+local function IsSpellIgnored(spellName)
+	if type(spellName) ~= "string" or not next(ARS.ignoredSpells) then return false end
+	local lowerSpell = spellName:lower()
+	for pattern in pairs(ARS.ignoredSpells) do
+		if type(pattern) == "string" and lowerSpell:find(pattern:lower(), 1, true) then
+			return true
 		end
 	end
 	return false
@@ -664,49 +699,53 @@ local function ProcessWatching()
 			duration = duration or 0
 
 			if duration >= SERVER_DEBUFF_MIN and duration <= SERVER_DEBUFF_MAX then
-				local debuffKey = spellName .. ":" .. tostring(castRank)
+				if IsSpellIgnored(spellName) then
+					DebugPrint("ProcessWatching: " .. spellName .. " is in ignore list. Skipping.")
+				else
+					local debuffKey = spellName .. ":" .. tostring(castRank)
 
-				if not ARS.cdServerDebuffs[debuffKey] then
-					DebugPrint("ProcessWatching: " .. spellName .. " Rank " .. tostring(castRank) .. " duration=" .. duration)
-					ARS.cdServerDebuffs[debuffKey] = {expiry = now + duration, duration = duration, texture = data[4], rank = castRank, spellName = spellName}
-					SaveDB()
-					Popup_Show(spellName, "DISABLED", {r=1, g=0.2, b=0.2}, data[4])
-					PlaySoundFile("Sound\\Interface\\Error.wav", "Master")
-					print(format("|cFFFF0000[CD Alert]|r |cFFFFFFFF%s|r Rank %s was DISABLED for 2 minutes by server!", spellName, tostring(castRank)))
+					if not ARS.cdServerDebuffs[debuffKey] then
+						DebugPrint("ProcessWatching: " .. spellName .. " Rank " .. tostring(castRank) .. " duration=" .. duration)
+						ARS.cdServerDebuffs[debuffKey] = {expiry = now + duration, duration = duration, texture = data[4], rank = castRank, spellName = spellName}
+						SaveDB()
+						Popup_Show(spellName, "DISABLED", {r=1, g=0.2, b=0.2}, data[4])
+						PlaySoundFile("Sound\\Interface\\Error.wav", "Master")
+						print(format("|cFFFF0000[CD Alert]|r |cFFFFFFFF%s|r Rank %s was DISABLED for 2 minutes by server!", spellName, tostring(castRank)))
 
-					-- Auto-rank-swap: only swap slots with the AFFECTED rank
-					local castRankNum = ParseSpellRank(castRank)
-					DebugPrint("ProcessWatching: castRank=" .. tostring(castRank) .. " castRankNum=" .. castRankNum)
-					local slots = FindActionSlotsWithSpell(spellName)
-					for _, slotInfo in ipairs(slots) do
-						if slotInfo.isMacro then
-							-- Macro: always swap when any rank is debuffed
-							local ranks = ARS.spellBookCache[spellName]
-							if ranks and #ranks > 1 then
-								local lowerBookIndex, lowerRank = FindLowerRank(spellName, castRank)
-								if lowerRank then
-									DebugPrint("ProcessWatching: MACRO swap " .. castRank .. " -> " .. lowerRank)
-									PerformMacroSwap(spellName, lowerRank)
-								else
-									DebugPrint("ProcessWatching: MACRO no lower rank available for " .. castRank)
-								end
-							end
-						else
-							-- Direct spell slot: only swap if rank matches
-							local slotRankNum = ParseSpellRank(slotInfo.rank)
-							DebugPrint("ProcessWatching: slot=" .. slotInfo.slot .. " slotRank=" .. slotRankNum .. " castRank=" .. castRankNum)
-							if slotRankNum == castRankNum then
-								local lowerBookIndex, lowerRank = FindLowerRank(spellName, slotInfo.rank)
-								if lowerBookIndex then
-									local ok = PerformSwap(slotInfo.slot, lowerBookIndex)
-									if ok then
-										print(format("|cFF00CCFF[CD Monitor]|r Swapped |cFFFFFFFF%s %s|r -> |cFFFFFFFF%s %s|r on slot #%d", spellName, slotInfo.rank, spellName, lowerRank, slotInfo.slot))
+						-- Auto-rank-swap: only swap slots with the AFFECTED rank
+						local castRankNum = ParseSpellRank(castRank)
+						DebugPrint("ProcessWatching: castRank=" .. tostring(castRank) .. " castRankNum=" .. castRankNum)
+						local slots = FindActionSlotsWithSpell(spellName)
+						for _, slotInfo in ipairs(slots) do
+							if slotInfo.isMacro then
+								-- Macro: always swap when any rank is debuffed
+								local ranks = ARS.spellBookCache[spellName]
+								if ranks and #ranks > 1 then
+									local lowerBookIndex, lowerRank = FindLowerRank(spellName, castRank)
+									if lowerRank then
+										DebugPrint("ProcessWatching: MACRO swap " .. castRank .. " -> " .. lowerRank)
+										PerformMacroSwap(spellName, lowerRank)
+									else
+										DebugPrint("ProcessWatching: MACRO no lower rank available for " .. castRank)
 									end
-								else
-									print(format("|cFFFF0000[CD Monitor]|r |cFFFFFFFF%s %s|r has no lower rank to swap to!", spellName, slotInfo.rank))
 								end
 							else
-								DebugPrint("ProcessWatching: slot=" .. slotInfo.slot .. " SKIPPED (rank " .. slotRankNum .. " != " .. castRankNum .. ")")
+								-- Direct spell slot: only swap if rank matches
+								local slotRankNum = ParseSpellRank(slotInfo.rank)
+								DebugPrint("ProcessWatching: slot=" .. slotInfo.slot .. " slotRank=" .. slotRankNum .. " castRank=" .. castRankNum)
+								if slotRankNum == castRankNum then
+									local lowerBookIndex, lowerRank = FindLowerRank(spellName, slotInfo.rank)
+									if lowerBookIndex then
+										local ok = PerformSwap(slotInfo.slot, lowerBookIndex)
+										if ok then
+											print(format("|cFF00CCFF[CD Monitor]|r Swapped |cFFFFFFFF%s %s|r -> |cFFFFFFFF%s %s|r on slot #%d", spellName, slotInfo.rank, spellName, lowerRank, slotInfo.slot))
+										end
+									else
+										print(format("|cFFFF0000[CD Monitor]|r |cFFFFFFFF%s %s|r has no lower rank to swap to!", spellName, slotInfo.rank))
+									end
+								else
+									DebugPrint("ProcessWatching: slot=" .. slotInfo.slot .. " SKIPPED (rank " .. slotRankNum .. " != " .. castRankNum .. ")")
+								end
 							end
 						end
 					end
@@ -886,13 +925,15 @@ local function ManualScan()
 				if duration >= SERVER_DEBUFF_MIN and duration <= SERVER_DEBUFF_MAX then
 					local name, rank = GetSpellName(id, BOOKTYPE_SPELL)
 					local texture = GetSpellTexture(id, BOOKTYPE_SPELL)
-					local debuffKey = name .. ":" .. tostring(rank)
-					if name and not ARS.cdServerDebuffs[debuffKey] then
-						ARS.cdServerDebuffs[debuffKey] = {expiry = GetTime() + duration, duration = duration, texture = texture, rank = rank, spellName = name}
-						SaveDB()
-						Popup_Show(name, "DISABLED", {r=1, g=0.2, b=0.2}, texture)
-						PlaySoundFile("Sound\\Interface\\Error.wav", "Master")
-						print(format("|cFFFF0000[CD Alert]|r |cFFFFFFFF%s|r Rank %s was DISABLED for 2 minutes by server!", name, tostring(rank)))
+					if name and not IsSpellIgnored(name) then
+						local debuffKey = name .. ":" .. tostring(rank)
+						if not ARS.cdServerDebuffs[debuffKey] then
+							ARS.cdServerDebuffs[debuffKey] = {expiry = GetTime() + duration, duration = duration, texture = texture, rank = rank, spellName = name}
+							SaveDB()
+							Popup_Show(name, "DISABLED", {r=1, g=0.2, b=0.2}, texture)
+							PlaySoundFile("Sound\\Interface\\Error.wav", "Master")
+							print(format("|cFFFF0000[CD Alert]|r |cFFFFFFFF%s|r Rank %s was DISABLED for 2 minutes by server!", name, tostring(rank)))
+						end
 					end
 				end
 			elseif actionType == "macro" and id and id > 0 then
@@ -931,48 +972,57 @@ local function Initialize(self)
 	SLASH_AUTORANKSWAP1 = "/cdscan"
 	SlashCmdList["AUTORANKSWAP"] = ManualScan
 
-	-- /cdignore <bar#> [bar#...] — toggle ignore for specific bars
-	-- /cdignore list — show ignored bars
-	-- /cdignore clear — clear all ignored bars
+	-- /cdignore <bar#> — toggle ignore for a specific bar
+	-- /cdignore <spell name> — toggle ignore for a spell name or partial match
+	-- /cdignore list — show ignored bars and spells
+	-- /cdignore clear — clear all ignored bars and spells
 	SLASH_ARSI1 = "/cdignore"
 	SlashCmdList["ARSI"] = function(msg)
 		msg = strtrim(msg or "")
 		if msg == "" then
-			print("|cFF00CCFF[CD Monitor]|r Usage: /cdignore <bar#> [bar#...] or /cdignore list or /cdignore clear")
+			print("|cFF00CCFF[CD Monitor]|r Usage: /cdignore <bar#> OR /cdignore <spell name> OR /cdignore list OR /cdignore clear")
 			return
 		end
 
 		if msg == "list" then
-			local ignored = {}
+			local ignoredBars = {}
 			for barNum in pairs(ARS.ignoredBars) do
-				tinsert(ignored, tostring(barNum))
+				tinsert(ignoredBars, tostring(barNum))
 			end
-			if #ignored > 0 then
-				print(format("|cFF00CCFF[CD Monitor]|r Ignored bars: %s", table.concat(ignored, ", ")))
-			else
-				print("|cFF00CCFF[CD Monitor]|r No bars ignored")
+			local ignoredSpells = {}
+			for spellName in pairs(ARS.ignoredSpells) do
+				tinsert(ignoredSpells, spellName)
 			end
+
+			print("|cFF00CCFF[CD Monitor]|r Ignored Bars: " .. (#ignoredBars > 0 and table.concat(ignoredBars, ", ") or "None"))
+			print("|cFF00CCFF[CD Monitor]|r Ignored Spells: " .. (#ignoredSpells > 0 and table.concat(ignoredSpells, ", ") or "None"))
 			return
 		end
 
 		if msg == "clear" then
 			wipe(ARS.ignoredBars)
+			wipe(ARS.ignoredSpells)
 			SaveDB()
-			print("|cFF00CCFF[CD Monitor]|r All bars cleared from ignore list")
+			print("|cFF00CCFF[CD Monitor]|r All bars and spells cleared from ignore list")
 			return
 		end
 
-		-- Parse bar numbers
-		for numStr in msg:gmatch("%d+") do
-			local barNum = tonumber(numStr)
-			if barNum then
-				if ARS.ignoredBars[barNum] then
-					ARS.ignoredBars[barNum] = nil
-					print(format("|cFF00CCFF[CD Monitor]|r Bar %d: now MONITORED", barNum))
-				else
-					ARS.ignoredBars[barNum] = true
-					print(format("|cFF00CCFF[CD Monitor]|r Bar %d: now IGNORED (will not auto-swap)", barNum))
-				end
+		local barNum = tonumber(msg)
+		if barNum then
+			if ARS.ignoredBars[barNum] then
+				ARS.ignoredBars[barNum] = nil
+				print(format("|cFF00CCFF[CD Monitor]|r Bar %d: now MONITORED", barNum))
+			else
+				ARS.ignoredBars[barNum] = true
+				print(format("|cFF00CCFF[CD Monitor]|r Bar %d: now IGNORED (will not auto-swap)", barNum))
+			end
+		else
+			if ARS.ignoredSpells[msg] then
+				ARS.ignoredSpells[msg] = nil
+				print(format("|cFF00CCFF[CD Monitor]|r Spell matching '%s': now MONITORED", msg))
+			else
+				ARS.ignoredSpells[msg] = true
+				print(format("|cFF00CCFF[CD Monitor]|r Spell matching '%s': now IGNORED (will not alert or auto-swap)", msg))
 			end
 		end
 		SaveDB()

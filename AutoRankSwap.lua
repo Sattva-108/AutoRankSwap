@@ -250,6 +250,13 @@ local function FindSpellBookIndex(spellName, rank)
 	local ranks = ARS.spellBookCache[spellName]
 	if not ranks then return nil end
 	local targetRank = ParseSpellRank(rank)
+
+	-- FIX: If no specific rank provided (happens in macros), assume the highest rank available
+	if targetRank == 0 and #ranks > 0 then
+		DebugPrint("FindSpellBookIndex: No rank specified for " .. spellName .. ", assuming highest rank.")
+		return ranks[1].bookIndex
+	end
+
 	for _, data in ipairs(ranks) do
 		if data.rankNum == targetRank then
 			return data.bookIndex
@@ -807,6 +814,16 @@ local function ProcessWatching()
 	for spellName, data in pairs(ARS.cdWatching) do
 		if now - data[1] >= WATCH_DELAY then
 			local castRank = data[3]
+
+			-- FIX: Fallback to highest rank if empty (macro casts usually don't send rank to API)
+			if not castRank or castRank == "" then
+				local ranks = ARS.spellBookCache[spellName]
+				if ranks and ranks[1] then
+					castRank = ranks[1].rank
+					DebugPrint("ProcessWatching: Rank was empty, assuming highest rank: " .. castRank)
+				end
+			end
+
 			local bookIndex = FindSpellBookIndex(spellName, castRank)
 			local start, duration = 0, 0
 
@@ -1017,6 +1034,24 @@ local function CDMonitor_OnEvent(self, event, unit, spell, rank)
 	elseif event == "PLAYER_ENTERING_WORLD" then
 		wipe(ARS.cdWatching)
 		BuildSpellBookCache()
+
+		-- FIX: Cleanup stuck debuffs (happens when client restarts and GetTime() resets to 0)
+		local now = GetTime()
+		local changed = false
+		for k, v in pairs(ARS.cdServerDebuffs) do
+			local remaining = (v.expiry or 0) - now
+			-- If expired, OR if time is absurdly high (> 300 seconds) meaning client restarted
+			if remaining < 0 or remaining > 300 then
+				DebugPrint("Startup Audit: Cleared stuck debuff for " .. tostring(k))
+				ARS.cdServerDebuffs[k] = nil
+				changed = true
+			end
+		end
+		if changed then
+			SaveDB()
+			ARS_UpdateTrackerUI()
+		end
+
 		-- Startup audit: clean up any stale state from before /reload or logout
 		CheckDebuffExpiry()
 		ValidateMacroRestores()

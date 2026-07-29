@@ -316,9 +316,9 @@ local function FindActionSlotsWithSpell(spellName)
 					tinsert(slots, { slot = slot, spellBookIndex = id, rank = rank or 0 })
 				end
 			elseif actionType == "macro" and id and id > 0 then
-				local macroSpell = GetMacroSpell(id)
-				if macroSpell == spellName then
-					DebugPrint("FindSlots: slot=" .. slot .. " MACRO macroSpell=" .. tostring(macroSpell))
+				local name, icon, text = GetMacroInfo(id)
+				if text and text:find(spellName, 1, true) then
+					DebugPrint("FindSlots: slot=" .. slot .. " MACRO match=" .. spellName)
 					tinsert(slots, { slot = slot, isMacro = true })
 				end
 			end
@@ -437,9 +437,9 @@ local function FindMacroSlot(spellName)
 		if not IsSlotInIgnoredBar(slot) then
 			local actionType, id = GetActionInfo(slot)
 			if actionType == "macro" and id and id > 0 then
-				local macroSpell = GetMacroSpell(id)
-				if macroSpell == spellName then
-					DebugPrint("FindMacroSlot: slot=" .. slot .. " id=" .. id .. " macroSpell=" .. tostring(macroSpell))
+				local name, icon, text = GetMacroInfo(id)
+				if text and text:find(spellName, 1, true) then
+					DebugPrint("FindMacroSlot: slot=" .. slot .. " id=" .. id .. " text match for " .. spellName)
 					return slot, id
 				end
 			end

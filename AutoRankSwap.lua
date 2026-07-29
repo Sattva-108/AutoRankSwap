@@ -682,6 +682,124 @@ local function CreatePopupFrame()
 end
 
 ---------------------------------------------------------------------------
+-- CD Tracker UI (3.3.5 Compatible)
+---------------------------------------------------------------------------
+local ICON_SIZE = 30
+local ICON_SPACING = 4
+local trackerAnchorFrame
+local trackerIcons = {}
+
+local function SaveTrackerAnchor()
+	if not AutoRankSwapDB then AutoRankSwapDB = {} end
+	local point, _, relativePoint, xOfs, yOfs = trackerAnchorFrame:GetPoint()
+	AutoRankSwapDB.trackerAnchor = { point = point, relativePoint = relativePoint, x = xOfs, y = yOfs }
+end
+
+local function ARS_UpdateTrackerUI()
+	if not trackerAnchorFrame then return end
+	local index = 1
+	local now = GetTime()
+
+	local sortedDebuffs = {}
+	for debuffKey, data in pairs(ARS.cdServerDebuffs) do
+		local remaining = (data.expiry or 0) - now
+		if remaining > 0 then
+			tinsert(sortedDebuffs, data)
+		end
+	end
+	table.sort(sortedDebuffs, function(a, b) return (a.expiry or 0) < (b.expiry or 0) end)
+
+	for _, data in ipairs(sortedDebuffs) do
+		local icon = trackerIcons[index]
+		if not icon then
+			icon = CreateFrame("Frame", nil, trackerAnchorFrame)
+			icon:SetSize(ICON_SIZE, ICON_SIZE)
+			icon:SetPoint("LEFT", trackerAnchorFrame, "LEFT", (index - 1) * (ICON_SIZE + ICON_SPACING), 0)
+
+			icon.texture = icon:CreateTexture(nil, "BACKGROUND")
+			icon.texture:SetAllPoints()
+			icon.texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+			icon.cd = CreateFrame("Cooldown", nil, icon, "CooldownFrameTemplate")
+			icon.cd:SetAllPoints()
+
+			icon.rankText = icon:CreateFontString(nil, "OVERLAY", "SystemFont_Outline_Small")
+			icon.rankText:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 2, -2)
+			icon.rankText:SetTextColor(1, 1, 1)
+
+			trackerIcons[index] = icon
+		end
+
+		icon.texture:SetTexture(data.texture)
+		local rankNum = data.rank and tostring(data.rank):match("%d+") or ""
+		icon.rankText:SetText(rankNum)
+
+		icon.cd:SetCooldown(data.expiry - data.duration, data.duration)
+		icon:Show()
+		index = index + 1
+	end
+
+	for i = index, #trackerIcons do
+		trackerIcons[i]:Hide()
+	end
+
+	if index > 1 then
+		trackerAnchorFrame:SetWidth((index - 1) * (ICON_SIZE + ICON_SPACING) - ICON_SPACING)
+	else
+		trackerAnchorFrame:SetWidth(ICON_SIZE)
+	end
+end
+
+local function ARS_ToggleTrackerUnlock()
+	if not trackerAnchorFrame then return end
+	trackerAnchorFrame.isUnlocked = not trackerAnchorFrame.isUnlocked
+	if trackerAnchorFrame.isUnlocked then
+		trackerAnchorFrame.bg:Show()
+		trackerAnchorFrame.text:Show()
+		print("|cFF00CCFF[CD Monitor]|r Tracker UI UNLOCKED. Drag the green box to move.")
+	else
+		trackerAnchorFrame.bg:Hide()
+		trackerAnchorFrame.text:Hide()
+		print("|cFF00CCFF[CD Monitor]|r Tracker UI LOCKED.")
+	end
+end
+
+local function ARS_CreateTrackerUI()
+	trackerAnchorFrame = CreateFrame("Frame", "ARS_CDTrackerAnchor", UIParent)
+	trackerAnchorFrame:SetSize(ICON_SIZE, ICON_SIZE)
+
+	if AutoRankSwapDB and AutoRankSwapDB.trackerAnchor then
+		local p = AutoRankSwapDB.trackerAnchor
+		trackerAnchorFrame:SetPoint(p.point, UIParent, p.relativePoint or p.point, p.x, p.y)
+	else
+		trackerAnchorFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 100)
+	end
+
+	trackerAnchorFrame:SetMovable(true)
+	trackerAnchorFrame:EnableMouse(true)
+	trackerAnchorFrame:RegisterForDrag("LeftButton")
+	trackerAnchorFrame:SetScript("OnDragStart", function(self)
+		if self.isUnlocked then
+			self:StartMoving()
+		end
+	end)
+	trackerAnchorFrame:SetScript("OnDragStop", function(self)
+		self:StopMovingOrSizing()
+		SaveTrackerAnchor()
+	end)
+
+	trackerAnchorFrame.bg = trackerAnchorFrame:CreateTexture(nil, "BACKGROUND")
+	trackerAnchorFrame.bg:SetAllPoints()
+	trackerAnchorFrame.bg:SetTexture(0, 1, 0, 0.4)
+	trackerAnchorFrame.bg:Hide()
+
+	trackerAnchorFrame.text = trackerAnchorFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	trackerAnchorFrame.text:SetPoint("BOTTOM", trackerAnchorFrame, "TOP", 0, 4)
+	trackerAnchorFrame.text:SetText("ARS CD Tracker")
+	trackerAnchorFrame.text:Hide()
+end
+
+---------------------------------------------------------------------------
 -- Core: Detection + Auto-Rank-Swap
 ---------------------------------------------------------------------------
 local function ProcessWatching()
@@ -708,6 +826,7 @@ local function ProcessWatching()
 						DebugPrint("ProcessWatching: " .. spellName .. " Rank " .. tostring(castRank) .. " duration=" .. duration)
 						ARS.cdServerDebuffs[debuffKey] = {expiry = now + duration, duration = duration, texture = data[4], rank = castRank, spellName = spellName}
 						SaveDB()
+						ARS_UpdateTrackerUI()
 						Popup_Show(spellName, "DISABLED", {r=1, g=0.2, b=0.2}, data[4])
 						PlaySoundFile("Sound\\Interface\\Error.wav", "Master")
 						print(format("|cFFFF0000[CD Alert]|r |cFFFFFFFF%s|r Rank %s was DISABLED for 2 minutes by server!", spellName, tostring(castRank)))
@@ -811,6 +930,7 @@ local function CheckDebuffExpiry()
 	end
 	if changed then
 		SaveDB()
+		ARS_UpdateTrackerUI()
 	end
 end
 
@@ -930,6 +1050,7 @@ local function ManualScan()
 						if not ARS.cdServerDebuffs[debuffKey] then
 							ARS.cdServerDebuffs[debuffKey] = {expiry = GetTime() + duration, duration = duration, texture = texture, rank = rank, spellName = name}
 							SaveDB()
+							ARS_UpdateTrackerUI()
 							Popup_Show(name, "DISABLED", {r=1, g=0.2, b=0.2}, texture)
 							PlaySoundFile("Sound\\Interface\\Error.wav", "Master")
 							print(format("|cFFFF0000[CD Alert]|r |cFFFFFFFF%s|r Rank %s was DISABLED for 2 minutes by server!", name, tostring(rank)))
@@ -955,6 +1076,12 @@ end
 local function Initialize(self)
 	-- Initialize SavedVariables (per-character)
 	LoadDB()
+
+	ARS_CreateTrackerUI()
+	ARS_UpdateTrackerUI()
+
+	SLASH_ARSU1 = "/cdui"
+	SlashCmdList["ARSU"] = ARS_ToggleTrackerUnlock
 
 	DebugPrint("Auto Rank Swap initializing...")
 

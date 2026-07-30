@@ -119,7 +119,7 @@ local function LoadDB()
 	end
 end
 
--- Map bar number → slot range, dynamically checking ElvUI button states if present
+-- Map bar number → slot range, dynamically checking ElvUI, Bartender, or Default Blizzard button states
 local function IsSlotInIgnoredBar(slot)
 	if not slot or not next(ARS.ignoredBars) then return false end
 
@@ -135,20 +135,31 @@ local function IsSlotInIgnoredBar(slot)
 			end
 		end
 
-		-- 2. Fallback WotLK / Blizzard / ElvUI Page-to-Slot Mapping:
-		-- Bar 1 = 1-12   (Main Bar)
-		-- Bar 2 = 49-60  (MultiBarBottomRight)
-		-- Bar 3 = 61-72  (MultiBarBottomLeft)
-		-- Bar 4 = 37-48  (MultiBarLeft)
-		-- Bar 5 = 25-36  (MultiBarRight / ElvUI Bar 5)
-		-- Bar 6 = 13-24  (Action Page 2 / ElvUI Bar 6)
+		-- 2. Direct Bartender4 button action inspection
+		for i = 1, 12 do
+			local btn = _G[format("BT4Button%d", (barNum - 1) * 12 + i)]
+			if btn then
+				local btnSlot = btn:GetAttribute("action") or btn._state_action or btn.action
+				if btnSlot and tonumber(btnSlot) == slot then
+					return true
+				end
+			end
+		end
+
+		-- 3. Standard WotLK / Blizzard Page-to-Slot Mapping:
+		-- Bar 1 = 1-12   (Main Action Bar)
+		-- Bar 2 = 13-24  (Action Page 2)
+		-- Bar 3 = 25-36  (MultiBarRight - Right Action Bar)
+		-- Bar 4 = 37-48  (MultiBarLeft - Left Action Bar)
+		-- Bar 5 = 49-60  (MultiBarBottomRight - Bottom Right Bar)
+		-- Bar 6 = 61-72  (MultiBarBottomLeft - Bottom Left Bar)
 		local pageMap = {
 			[1] = {1, 12},
-			[2] = {49, 60},
-			[3] = {61, 72},
+			[2] = {13, 24},
+			[3] = {25, 36},
 			[4] = {37, 48},
-			[5] = {25, 36},
-			[6] = {13, 24},
+			[5] = {49, 60},
+			[6] = {61, 72},
 		}
 		local range = pageMap[barNum]
 		if range then
@@ -1128,6 +1139,28 @@ end
 -- Forward declaration so closures can reference it
 local ARS_ExitIgnoreBarMode
 
+-- Map bar number → parent frame, supporting ElvUI, Bartender4, and Blizzard UI
+local function GetBarFrame(barNum)
+	-- 1. ElvUI support
+	local elvFrame = _G["ElvUI_Bar" .. barNum]
+	if elvFrame then return elvFrame end
+
+	-- 2. Bartender4 support
+	local btFrame = _G["BT4Bar" .. barNum]
+	if btFrame then return btFrame end
+
+	-- 3. Default Blizzard UI support (3.3.5a)
+	local blizzFrames = {
+		[1] = _G["ActionButton1"] and _G["ActionButton1"]:GetParent(), -- MainMenuBarArtFrame / MainMenuBar
+		[2] = nil, -- Page 2 usually overlayed on main bar
+		[3] = _G["MultiBarRight"],
+		[4] = _G["MultiBarLeft"],
+		[5] = _G["MultiBarBottomRight"],
+		[6] = _G["MultiBarBottomLeft"],
+	}
+	return blizzFrames[barNum]
+end
+
 local function ARS_ToggleBarIgnore(barNum)
 	if ARS.ignoredBars[barNum] then
 		ARS.ignoredBars[barNum] = nil
@@ -1153,18 +1186,34 @@ local function ARS_CreateHighlightFrames()
 	wipe(highlightFrames)
 
 	for barNum = 1, 10 do
-		-- Get ElvUI bar frame directly (already correctly positioned in ElvUIParent)
-		local barFrame = _G["ElvUI_Bar" .. barNum]
+		local barFrame = GetBarFrame(barNum)
+
+		-- Fallback for Blizzard Bar 1 (MainMenuBar buttons 1..12 bounding box)
+		if not barFrame and barNum == 1 and _G["ActionButton1"] then
+			barFrame = _G["ActionButton1"]:GetParent()
+		end
+
 		if barFrame and barFrame:IsShown() and barFrame:IsVisible() then
-			-- Create highlight as child of bar frame — follows position automatically!
 			local frame = CreateFrame("Frame", nil, barFrame)
 			frame:SetFrameStrata(barFrame:GetFrameStrata())
-			frame:SetFrameLevel(barFrame:GetFrameLevel() + 2)
+			frame:SetFrameLevel(barFrame:GetFrameLevel() + 10)
 			frame:EnableMouse(true)
 			frame.barNum = barNum
 
-			-- Match exact size and position of bar frame
-			frame:SetAllPoints(barFrame)
+			-- Target exact bar bounding box or fallback to button 1..12 area
+			if barNum == 1 and not _G["ElvUI_Bar1"] and not _G["BT4Bar1"] then
+				-- Anchor specifically around ActionButton1 to ActionButton12 for default Blizzard UI
+				local firstBtn = _G["ActionButton1"]
+				local lastBtn = _G["ActionButton12"]
+				if firstBtn and lastBtn then
+					frame:SetPoint("TOPLEFT", firstBtn, "TOPLEFT", -2, 2)
+					frame:SetPoint("BOTTOMRIGHT", lastBtn, "BOTTOMRIGHT", 2, -2)
+				else
+					frame:SetAllPoints(barFrame)
+				end
+			else
+				frame:SetAllPoints(barFrame)
+			end
 
 			-- Green background overlay
 			frame.bg = frame:CreateTexture(nil, "BACKGROUND")
@@ -1184,8 +1233,11 @@ local function ARS_CreateHighlightFrames()
 				if not ARS.ignoreBarMode then return end
 				self.bg:Show()
 				self.border:Show()
-				GameTooltip:SetParent(self)
-				GameTooltip:SetFrameLevel(GameTooltip:GetFrameLevel() + 10)
+
+				-- CORRECT API: Use SetOwner instead of SetParent to avoid breaking GameTooltip structure
+				GameTooltip:SetOwner(self, "ANCHOR_TOP")
+				GameTooltip:ClearLines()
+
 				if ARS.ignoredBars[self.barNum] then
 					GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r", 1, 1, 0)
 					GameTooltip:AddLine("|cFF00FF00Already Ignored|r", 0, 1, 0)
@@ -1237,6 +1289,10 @@ end
 ARS_ExitIgnoreBarMode = function()
 	if not ARS.ignoreBarMode then return end
 	ARS.ignoreBarMode = false
+
+	-- Force-hide tooltip on mode exit to prevent it from lingering
+	GameTooltip:Hide()
+
 	for i = 1, #highlightFrames do
 		local f = highlightFrames[i]
 		f:SetScript("OnEnter", nil)

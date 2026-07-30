@@ -46,9 +46,11 @@ ARS.pendingSwaps = {}     -- persisted in SavedVariables [actionSlot] = { ... }
 ARS.pendingRestores = {}  -- volatile, not persisted
 ARS.ignoredBars = {}      -- persisted in SavedVariables
 ARS.ignoredSpells = {}    -- persisted in SavedVariables
+ARS.ignoreBarMode = false -- visual mode for /cdignore
 
 local cdMonitorFrame
 local ARSDB
+local highlightFrames = {}
 
 ---------------------------------------------------------------------------
 -- Debug
@@ -1121,6 +1123,134 @@ local function ManualScan()
 end
 
 ---------------------------------------------------------------------------
+-- Ignore Bar Highlight System
+---------------------------------------------------------------------------
+-- Forward declaration so closures can reference it
+local ARS_ExitIgnoreBarMode
+
+local function ARS_ToggleBarIgnore(barNum)
+	if ARS.ignoredBars[barNum] then
+		ARS.ignoredBars[barNum] = nil
+		print(format("|cFF00CCFF[CD Monitor]|r Bar %d: now MONITORED", barNum))
+	else
+		ARS.ignoredBars[barNum] = true
+		print(format("|cFF00CCFF[CD Monitor]|r Bar %d: now IGNORED (will not auto-swap)", barNum))
+	end
+	SaveDB()
+end
+
+local function ARS_CreateHighlightFrames()
+	-- Destroy existing highlight frames
+	for i = 1, #highlightFrames do
+		local f = highlightFrames[i]
+		f:SetScript("OnEnter", nil)
+		f:SetScript("OnLeave", nil)
+		f:SetScript("OnMouseDown", nil)
+		f:SetScript("OnKeyDown", nil)
+		f:SetParent(nil)
+		f:Hide()
+	end
+	wipe(highlightFrames)
+
+	for barNum = 1, 10 do
+		-- Get ElvUI bar frame directly (already correctly positioned in ElvUIParent)
+		local barFrame = _G["ElvUI_Bar" .. barNum]
+		if barFrame and barFrame:IsShown() and barFrame:IsVisible() then
+			-- Create highlight as child of bar frame — follows position automatically!
+			local frame = CreateFrame("Frame", nil, barFrame)
+			frame:SetFrameStrata(barFrame:GetFrameStrata())
+			frame:SetFrameLevel(barFrame:GetFrameLevel() + 2)
+			frame:EnableMouse(true)
+			frame.barNum = barNum
+
+			-- Match exact size and position of bar frame
+			frame:SetAllPoints(barFrame)
+
+			-- Green background overlay
+			frame.bg = frame:CreateTexture(nil, "BACKGROUND")
+			frame.bg:SetAllPoints()
+			frame.bg:SetTexture(0, 1, 0, 0.25)
+			frame.bg:Hide()
+
+			-- Green border
+			frame.border = frame:CreateTexture(nil, "BORDER")
+			frame.border:SetTexture(0, 1, 0, 0.9)
+			frame.border:SetAllPoints()
+			frame.border:SetBlendMode("ADD")
+			frame.border:Hide()
+
+			-- OnEnter: show green highlight
+			frame:SetScript("OnEnter", function(self)
+				if not ARS.ignoreBarMode then return end
+				self.bg:Show()
+				self.border:Show()
+				GameTooltip:SetParent(self)
+				GameTooltip:SetFrameLevel(GameTooltip:GetFrameLevel() + 10)
+				if ARS.ignoredBars[self.barNum] then
+					GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r", 1, 1, 0)
+					GameTooltip:AddLine("|cFF00FF00Already Ignored|r", 0, 1, 0)
+				else
+					GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r", 1, 1, 0)
+					GameTooltip:AddLine("|cFFFFFFFFLeft-Click to Ignore|r", 1, 1, 1)
+				end
+				GameTooltip:Show()
+			end)
+
+			-- OnLeave: hide highlight
+			frame:SetScript("OnLeave", function(self)
+				self.bg:Hide()
+				self.border:Hide()
+				GameTooltip:Hide()
+			end)
+
+			-- OnMouseDown: left = ignore & exit, right = exit
+			frame:SetScript("OnMouseDown", function(self, button)
+				if not ARS.ignoreBarMode then return end
+				if button == "LeftButton" then
+					ARS_ToggleBarIgnore(self.barNum)
+					ARS_ExitIgnoreBarMode()
+				elseif button == "RightButton" then
+					ARS_ExitIgnoreBarMode()
+				end
+			end)
+
+			-- OnKeyDown: ESC to exit
+			frame:SetScript("OnKeyDown", function(self, key)
+				if key == "ESCAPE" then
+					ARS_ExitIgnoreBarMode()
+				end
+			end)
+
+			frame:Show()
+			tinsert(highlightFrames, frame)
+		end
+	end
+end
+
+local function ARS_EnterIgnoreBarMode()
+	if ARS.ignoreBarMode then return end
+	ARS.ignoreBarMode = true
+	ARS_CreateHighlightFrames()
+	print("|cFF00CCFF[CD Monitor]|r |cFFFFFFFFIgnore Bar Mode|r: Hover bars to preview, |cFFFFFFFFLeft-Click|r to ignore, |cFFFFFFFFRight-Click/ESC|r to cancel.")
+end
+
+ARS_ExitIgnoreBarMode = function()
+	if not ARS.ignoreBarMode then return end
+	ARS.ignoreBarMode = false
+	for i = 1, #highlightFrames do
+		local f = highlightFrames[i]
+		f:SetScript("OnEnter", nil)
+		f:SetScript("OnLeave", nil)
+		f:SetScript("OnMouseDown", nil)
+		f:SetScript("OnKeyDown", nil)
+		f:SetParent(nil)
+		f:Hide()
+	end
+	wipe(highlightFrames)
+	print("|cFF00CCFF[CD Monitor]|r Ignore Bar Mode cancelled.")
+end
+
+---------------------------------------------------------------------------
 -- Initialization
 ---------------------------------------------------------------------------
 local function Initialize(self)
@@ -1157,7 +1287,17 @@ local function Initialize(self)
 	SlashCmdList["ARSI"] = function(msg)
 		msg = strtrim(msg or "")
 		if msg == "" then
-			print("|cFF00CCFF[CD Monitor]|r Usage: /cdignore <bar#> OR /cdignore <spell name> OR /cdignore list OR /cdignore clear")
+			ARS_EnterIgnoreBarMode()
+			return
+		end
+
+		if msg == "help" then
+			print("|cFF00CCFF[CD Monitor]|r Usage:")
+			print("|cFF00CCFF[CD Monitor]|r  /cdignore                          - Enter visual bar ignore mode")
+			print("|cFF00CCFF[CD Monitor]|r  /cdignore <bar#>                   - Toggle bar ignore")
+			print("|cFF00CCFF[CD Monitor]|r  /cdignore <spell name>             - Toggle spell ignore")
+			print("|cFF00CCFF[CD Monitor]|r  /cdignore list                     - Show ignored bars and spells")
+			print("|cFF00CCFF[CD Monitor]|r  /cdignore clear                    - Clear all ignore entries")
 			return
 		end
 

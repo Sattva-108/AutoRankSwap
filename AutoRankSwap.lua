@@ -48,7 +48,8 @@ ARS.ignoredBars = {}      -- persisted in SavedVariables
 ARS.ignoredSpells = {}    -- persisted in SavedVariables
 ARS.ignoreBarMode = false -- visual mode for /cdignore
 
-local cdMonitorFrame
+-- Minimap icon and LDB provider
+local ldbObject
 local ARSDB
 local highlightFrames = {}
 
@@ -1354,11 +1355,55 @@ ARS_ExitIgnoreBarMode = function()
 end
 
 ---------------------------------------------------------------------------
+-- Minimap Icon & LibDataBroker Integration
+---------------------------------------------------------------------------
+local function CreateMinimapIcon()
+	local LDB = LibStub and LibStub("LibDataBroker-1.1", true)
+	local LDBIcon = LibStub and LibStub("LibDBIcon-1.0", true)
+
+	if not LDB then return end
+
+	-- Register LDB Launcher Object
+	ldbObject = LDB:NewDataObject("AutoRankSwap", {
+		type = "launcher",
+		label = "Auto Rank Swap",
+		icon = "Interface\\Icons\\INV_Misc_PocketWatch_02",
+		OnClick = function(self, button)
+			if button == "LeftButton" then
+				if IsShiftKeyDown() then
+					ManualScan()
+				else
+					ARS_EnterIgnoreBarMode()
+				end
+			elseif button == "RightButton" then
+				ARS_ToggleTrackerUnlock()
+			end
+		end,
+		OnTooltipShow = function(tooltip)
+			if not tooltip or not tooltip.AddLine then return end
+			tooltip:AddLine("|cFF00CCFFAuto Rank Swap|r |cFFFFFFFF(ARS)|r")
+			tooltip:AddLine(" ")
+			tooltip:AddLine("|cFFFFFFFFLeft-Click:|r |cFF00FF00Visual Bar Ignore mode|r (/cdignore)")
+			tooltip:AddLine("|cFFFFFFFFRight-Click:|r |cFFFFFF00Lock/Unlock CD Tracker UI|r (/cdui)")
+			tooltip:AddLine("|cFFFFFFFFShift + Left-Click:|r |cFF00CCFFManual Slot Scan|r (/cdscan)")
+		end,
+	})
+
+	if LDBIcon then
+		ARSDB.minimap = ARSDB.minimap or { hide = false }
+		LDBIcon:Register("AutoRankSwap", ldbObject, ARSDB.minimap)
+	end
+end
+
+---------------------------------------------------------------------------
 -- Initialization
 ---------------------------------------------------------------------------
 local function Initialize(self)
 	-- Initialize SavedVariables (per-character)
 	LoadDB()
+
+	-- Create Minimap Icon
+	CreateMinimapIcon()
 
 	ARS_CreateTrackerUI()
 	ARS_UpdateTrackerUI()

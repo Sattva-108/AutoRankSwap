@@ -47,11 +47,13 @@ ARS.pendingRestores = {}  -- volatile, not persisted
 ARS.ignoredBars = {}      -- persisted in SavedVariables
 ARS.ignoredSpells = {}    -- persisted in SavedVariables
 ARS.ignoreBarMode = false -- visual mode for /cdignore
+ARS.tempIgnoredBars = {}  -- volatile, used during config mode
 
 -- Minimap icon and LDB provider
 local ldbObject
 local ARSDB
 local highlightFrames = {}
+local configDialogFrame
 
 ---------------------------------------------------------------------------
 -- Debug
@@ -732,7 +734,7 @@ end
 ---------------------------------------------------------------------------
 -- CD Tracker UI (3.3.5 Compatible)
 ---------------------------------------------------------------------------
-local ICON_SIZE = 30
+local ICON_SIZE = 60
 local ICON_SPACING = 4
 local trackerAnchorFrame
 local trackerIcons = {}
@@ -798,9 +800,14 @@ local function ARS_UpdateTrackerUI()
 	end
 end
 
-local function ARS_ToggleTrackerUnlock()
+local function ARS_ToggleTrackerUnlock(enable)
 	if not trackerAnchorFrame then return end
-	trackerAnchorFrame.isUnlocked = not trackerAnchorFrame.isUnlocked
+	if enable ~= nil then
+		trackerAnchorFrame.isUnlocked = enable
+	else
+		trackerAnchorFrame.isUnlocked = not trackerAnchorFrame.isUnlocked
+	end
+
 	if trackerAnchorFrame.isUnlocked then
 		trackerAnchorFrame.bg:Show()
 		trackerAnchorFrame.text:Show()
@@ -820,7 +827,7 @@ local function ARS_CreateTrackerUI()
 		local p = AutoRankSwapDB.trackerAnchor
 		trackerAnchorFrame:SetPoint(p.point, UIParent, p.relativePoint or p.point, p.x, p.y)
 	else
-		trackerAnchorFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 100)
+		trackerAnchorFrame:SetPoint('BOTTOM', UIParent, 0, 128)
 	end
 
 	trackerAnchorFrame:SetMovable(true)
@@ -843,7 +850,7 @@ local function ARS_CreateTrackerUI()
 
 	trackerAnchorFrame.text = trackerAnchorFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 	trackerAnchorFrame.text:SetPoint("BOTTOM", trackerAnchorFrame, "TOP", 0, 4)
-	trackerAnchorFrame.text:SetText("ARS CD Tracker")
+	trackerAnchorFrame.text:SetText("Иконки КД")
 	trackerAnchorFrame.text:Hide()
 end
 
@@ -1148,8 +1155,28 @@ end
 ---------------------------------------------------------------------------
 -- Ignore Bar Highlight System
 ---------------------------------------------------------------------------
--- Forward declaration so closures can reference it
+-- Forward declarations
 local ARS_ExitIgnoreBarMode
+
+-- Helper to update highlight color dynamically (Red = Ignored, Green = Monitored)
+local function ARS_UpdateHighlightFrameVisual(frame)
+	local barNum = frame.barNum
+	local isIgnored = ARS.tempIgnoredBars[barNum]
+
+	if isIgnored then
+		-- RED visual for Ignored Bars
+		frame.bg:SetTexture(1, 0, 0, 0.35)
+		frame.bg:Show()
+		frame.border:SetTexture(1, 0, 0, 0.9)
+		frame.border:Show()
+	else
+		-- GREEN visual for Monitored Bars
+		frame.bg:SetTexture(0, 1, 0, 0.2)
+		frame.bg:Show()
+		frame.border:SetTexture(0, 1, 0, 0.8)
+		frame.border:Show()
+	end
+end
 
 -- Helper: Get list of active visual button frames for a given bar number
 local function GetBarButtons(barNum)
@@ -1263,60 +1290,68 @@ local function ARS_CreateHighlightFrames()
 				frame:SetWidth((right - left) + 6)
 				frame:SetHeight((top - bottom) + 6)
 
-				-- Green background overlay
+				-- Background overlay texture
 				frame.bg = frame:CreateTexture(nil, "BACKGROUND")
 				frame.bg:SetAllPoints()
-				frame.bg:SetTexture(0, 1, 0, 0.25)
-				frame.bg:Hide()
 
-				-- Green border
+				-- Border texture
 				frame.border = frame:CreateTexture(nil, "BORDER")
-				frame.border:SetTexture(0, 1, 0, 0.9)
 				frame.border:SetAllPoints()
 				frame.border:SetBlendMode("ADD")
-				frame.border:Hide()
 
-				-- OnEnter: show green highlight & safe GameTooltip
+				-- Initial Visual State (Red for Ignored, Green for Monitored)
+				ARS_UpdateHighlightFrameVisual(frame)
+
+				-- OnEnter: show tooltip
 				frame:SetScript("OnEnter", function(self)
 					if not ARS.ignoreBarMode then return end
-					self.bg:Show()
-					self.border:Show()
 
 					GameTooltip:SetOwner(self, "ANCHOR_TOP")
 					GameTooltip:ClearLines()
 
-					if ARS.ignoredBars[self.barNum] then
-						GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r", 1, 1, 0)
-						GameTooltip:AddLine("|cFF00FF00Already Ignored|r", 0, 1, 0)
+					local isIgnored = ARS.tempIgnoredBars[self.barNum]
+					if isIgnored then
+						GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r |cFFFF3333(Currently Ignored)|r", 1, 1, 0)
+						GameTooltip:AddLine("|cFF00FF00Left-Click to Monitor (Enable Auto-Swap)|r", 0, 1, 0)
 					else
-						GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r", 1, 1, 0)
-						GameTooltip:AddLine("|cFFFFFFFFLeft-Click to Ignore|r", 1, 1, 1)
+						GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r |cFF33FF33(Currently Monitored)|r", 1, 1, 0)
+						GameTooltip:AddLine("|cFFFF3333Left-Click to Ignore (Disable Auto-Swap)|r", 1, 0.2, 0.2)
 					end
 					GameTooltip:Show()
 				end)
 
-				-- OnLeave: hide highlight
+				-- OnLeave
 				frame:SetScript("OnLeave", function(self)
-					self.bg:Hide()
-					self.border:Hide()
 					GameTooltip:Hide()
 				end)
 
-				-- OnMouseDown: left = ignore & exit, right = exit
+				-- OnMouseDown: Left = Toggle State, Right = Cancel & Exit
 				frame:SetScript("OnMouseDown", function(self, button)
 					if not ARS.ignoreBarMode then return end
 					if button == "LeftButton" then
-						ARS_ToggleBarIgnore(self.barNum)
-						ARS_ExitIgnoreBarMode()
+						-- Toggle temp state
+						if ARS.tempIgnoredBars[self.barNum] then
+							ARS.tempIgnoredBars[self.barNum] = nil
+						else
+							ARS.tempIgnoredBars[self.barNum] = true
+						end
+
+						-- Update color immediately
+						ARS_UpdateHighlightFrameVisual(self)
+
+						-- Refresh Tooltip
+						if self:HasScript("OnEnter") then
+							self:GetScript("OnEnter")(self)
+						end
 					elseif button == "RightButton" then
-						ARS_ExitIgnoreBarMode()
+						ARS_CancelAndExitIgnoreBarMode()
 					end
 				end)
 
-				-- OnKeyDown: ESC to exit
+				-- OnKeyDown: ESC = Cancel
 				frame:SetScript("OnKeyDown", function(self, key)
 					if key == "ESCAPE" then
-						ARS_ExitIgnoreBarMode()
+						ARS_CancelAndExitIgnoreBarMode()
 					end
 				end)
 
@@ -1327,20 +1362,133 @@ local function ARS_CreateHighlightFrames()
 	end
 end
 
+---------------------------------------------------------------------------
+-- Config Dialog Frame (Save / Cancel Popup)
+---------------------------------------------------------------------------
+local function CreateConfigDialogFrame()
+	if configDialogFrame then return end
+
+	local f = CreateFrame("Frame", "AutoRankSwap_ConfigDialog", UIParent)
+	f:SetFrameStrata("DIALOG")
+	f:SetToplevel(true)
+	f:EnableMouse(true)
+	f:SetClampedToScreen(true)
+	f:SetWidth(380)
+	f:SetHeight(110)
+	f:SetBackdrop({
+		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+		edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+		tile = true, tileSize = 32, edgeSize = 32,
+		insets = {left = 11, right = 12, top = 12, bottom = 11}
+	})
+	f:SetPoint("TOP", UIParent, "TOP", 0, -50)
+	f:Hide()
+
+	local header = f:CreateTexture(nil, "ARTWORK")
+	header:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
+	header:SetWidth(280)
+	header:SetHeight(64)
+	header:SetPoint("TOP", 0, 12)
+
+	local title = f:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+	title:SetPoint("TOP", header, "TOP", 0, -14)
+	title:SetText("Auto Rank Swap - Bar Config")
+
+	local desc = f:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+	desc:SetPoint("TOPLEFT", 18, -32)
+	desc:SetPoint("BOTTOMRIGHT", -18, 42)
+	desc:SetJustifyH("CENTER")
+	desc:SetJustifyV("TOP")
+	desc:SetText("Click bars to toggle: |cFFFF3333Red = Ignored|r | |cFF33FF33Green = Monitored|r\nDrag the green CD Tracker box to move it.")
+
+	-- Save Button
+	local saveBtn = CreateFrame("Button", nil, f, "OptionsButtonTemplate")
+	saveBtn:SetText("Save")
+	saveBtn:SetWidth(100)
+	saveBtn:SetPoint("BOTTOMLEFT", 40, 14)
+	saveBtn:SetScript("OnClick", function()
+		ARS_SaveAndExitIgnoreBarMode()
+	end)
+
+	-- Cancel Button
+	local cancelBtn = CreateFrame("Button", nil, f, "OptionsButtonTemplate")
+	cancelBtn:SetText("Cancel")
+	cancelBtn:SetWidth(100)
+	cancelBtn:SetPoint("BOTTOMRIGHT", -40, 14)
+	cancelBtn:SetScript("OnClick", function()
+		ARS_CancelAndExitIgnoreBarMode()
+	end)
+
+	configDialogFrame = f
+end
+
 local function ARS_EnterIgnoreBarMode()
 	if ARS.ignoreBarMode then return end
 	ARS.ignoreBarMode = true
+
+	-- Copy current saved ignoredBars into tempIgnoredBars
+	wipe(ARS.tempIgnoredBars)
+	for barNum in pairs(ARS.ignoredBars) do
+		ARS.tempIgnoredBars[barNum] = true
+	end
+
+	-- Show Save/Cancel Config Dialog
+	CreateConfigDialogFrame()
+	configDialogFrame:Show()
+
+	-- Create Highlight Frames (All bars show RED or GREEN automatically)
 	ARS_CreateHighlightFrames()
-	print("|cFF00CCFF[CD Monitor]|r |cFFFFFFFFIgnore Bar Mode|r: Hover bars to preview, |cFFFFFFFFLeft-Click|r to ignore, |cFFFFFFFFRight-Click/ESC|r to cancel.")
+
+	-- Automatically unlock and show the CD Tracker anchor for moving
+	if trackerAnchorFrame then
+		trackerAnchorFrame.isUnlocked = true
+		trackerAnchorFrame.bg:Show()
+		trackerAnchorFrame.text:Show()
+	end
+
+	print("|cFF00CCFF[CD Monitor]|r |cFFFFFFFFConfig Mode|r: Click bars to toggle (Red = Ignored, Green = Monitored). Click Save or Cancel when done.")
+end
+
+function ARS_SaveAndExitIgnoreBarMode()
+	if not ARS.ignoreBarMode then return end
+
+	-- Apply temp changes to permanent ARS.ignoredBars
+	wipe(ARS.ignoredBars)
+	for barNum in pairs(ARS.tempIgnoredBars) do
+		ARS.ignoredBars[barNum] = true
+	end
+	SaveDB()
+
+	ARS_ExitIgnoreBarMode()
+	print("|cFF00CCFF[CD Monitor]|r Bar ignore settings |cFF00FF00SAVED|r.")
+end
+
+function ARS_CancelAndExitIgnoreBarMode()
+	if not ARS.ignoreBarMode then return end
+
+	-- Discard temp changes
+	wipe(ARS.tempIgnoredBars)
+
+	ARS_ExitIgnoreBarMode()
+	print("|cFF00CCFF[CD Monitor]|r Bar ignore changes |cFFFF5555CANCELLED|r.")
 end
 
 ARS_ExitIgnoreBarMode = function()
 	if not ARS.ignoreBarMode then return end
 	ARS.ignoreBarMode = false
 
-	-- Force-hide tooltip on mode exit to prevent it from lingering
+	-- Hide Tooltip and Config Dialog
 	GameTooltip:Hide()
+	if configDialogFrame then configDialogFrame:Hide() end
 
+	-- Automatically lock and hide the CD Tracker anchor
+	if trackerAnchorFrame then
+		trackerAnchorFrame.isUnlocked = false
+		trackerAnchorFrame.bg:Hide()
+		trackerAnchorFrame.text:Hide()
+	end
+
+	-- Cleanup Highlight Frames
 	for i = 1, #highlightFrames do
 		local f = highlightFrames[i]
 		f:SetScript("OnEnter", nil)
@@ -1351,7 +1499,6 @@ ARS_ExitIgnoreBarMode = function()
 		f:Hide()
 	end
 	wipe(highlightFrames)
-	print("|cFF00CCFF[CD Monitor]|r Ignore Bar Mode cancelled.")
 end
 
 ---------------------------------------------------------------------------
@@ -1367,25 +1514,33 @@ local function CreateMinimapIcon()
 	ldbObject = LDB:NewDataObject("AutoRankSwap", {
 		type = "launcher",
 		label = "Auto Rank Swap",
-		icon = "Interface\\Icons\\INV_Misc_PocketWatch_02",
+		icon = "Interface\\Icons\\INV_Misc_PocketWatch_01",
 		OnClick = function(self, button)
 			if button == "LeftButton" then
-				if IsShiftKeyDown() then
-					ManualScan()
+				if ARS.ignoreBarMode then
+					ARS_SaveAndExitIgnoreBarMode()
 				else
 					ARS_EnterIgnoreBarMode()
 				end
 			elseif button == "RightButton" then
-				ARS_ToggleTrackerUnlock()
+				if ARS.ignoreBarMode then
+					ARS_CancelAndExitIgnoreBarMode()
+				else
+					ARS_ToggleTrackerUnlock()
+				end
 			end
 		end,
 		OnTooltipShow = function(tooltip)
 			if not tooltip or not tooltip.AddLine then return end
 			tooltip:AddLine("|cFF00CCFFAuto Rank Swap|r |cFFFFFFFF(ARS)|r")
 			tooltip:AddLine(" ")
-			tooltip:AddLine("|cFFFFFFFFLeft-Click:|r |cFF00FF00Visual Bar Ignore mode|r (/cdignore)")
-			tooltip:AddLine("|cFFFFFFFFRight-Click:|r |cFFFFFF00Lock/Unlock CD Tracker UI|r (/cdui)")
-			tooltip:AddLine("|cFFFFFFFFShift + Left-Click:|r |cFF00CCFFManual Slot Scan|r (/cdscan)")
+			if ARS.ignoreBarMode then
+				tooltip:AddLine("|cFFFFFFFFLeft-Click:|r |cFF00FF00Save & Exit Config|r")
+				tooltip:AddLine("|cFFFFFFFFRight-Click:|r |cFFFF3333Cancel & Exit Config|r")
+			else
+				tooltip:AddLine("|cFFFFFFFFLeft-Click:|r |cFF00FF00Bar Ignore Mode & Move Tracker|r")
+				tooltip:AddLine("|cFFFFFFFFRight-Click:|r |cFFFFFF00Toggle CD Tracker UI|r")
+			end
 		end,
 	})
 

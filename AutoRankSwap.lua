@@ -119,12 +119,25 @@ local function LoadDB()
 	end
 end
 
--- Map bar number → slot range, dynamically checking ElvUI, Bartender, or Default Blizzard button states
+-- Map bar number → slot range, dynamically checking Dominos, ElvUI, Bartender, or Default Blizzard button states
 local function IsSlotInIgnoredBar(slot)
 	if not slot or not next(ARS.ignoredBars) then return false end
 
 	for barNum in pairs(ARS.ignoredBars) do
-		-- 1. Direct ElvUI button action inspection
+		-- 1. Direct Dominos button action inspection
+		local domFrame = _G["DominosFrame" .. barNum] or (Dominos and Dominos.Frame and Dominos.Frame:Get(barNum))
+		if domFrame and domFrame.buttons then
+			for _, btn in ipairs(domFrame.buttons) do
+				if btn then
+					local btnSlot = btn:GetAttribute("action") or btn:GetAttribute("action--base") or btn._state_action or btn.action
+					if btnSlot and tonumber(btnSlot) == slot then
+						return true
+					end
+				end
+			end
+		end
+
+		-- 2. Direct ElvUI button action inspection
 		for i = 1, 12 do
 			local btn = _G["ElvUI_Bar" .. barNum .. "Button" .. i]
 			if btn then
@@ -135,7 +148,7 @@ local function IsSlotInIgnoredBar(slot)
 			end
 		end
 
-		-- 2. Direct Bartender4 button action inspection
+		-- 3. Direct Bartender4 button action inspection
 		for i = 1, 12 do
 			local btn = _G[format("BT4Button%d", (barNum - 1) * 12 + i)]
 			if btn then
@@ -146,15 +159,15 @@ local function IsSlotInIgnoredBar(slot)
 			end
 		end
 
-		-- 3. Standard WotLK / Blizzard Page-to-Slot Mapping (Bars 1..10 -> Slots 1..120):
+		-- 4. Standard WotLK / Blizzard Page-to-Slot Mapping (Bars 1..10 -> Slots 1..120):
 		local pageMap = {
 			[1]  = {1, 12},    -- Main Action Bar
-			[2]  = {13, 24},   -- Action Page 2
-			[3]  = {25, 36},   -- MultiBarRight (Right Action Bar)
-			[4]  = {37, 48},   -- MultiBarLeft (Left Action Bar)
-			[5]  = {49, 60},   -- MultiBarBottomRight (Bottom Right Bar)
-			[6]  = {61, 72},   -- MultiBarBottomLeft (Bottom Left Bar)
-			[7]  = {73, 84},   -- Action Page 7 / Stance Bar
+			[2]  = {13, 24},   -- Action Page 2 / Bonus Bar
+			[3]  = {25, 36},   -- MultiBarRight
+			[4]  = {37, 48},   -- MultiBarLeft
+			[5]  = {49, 60},   -- MultiBarBottomRight
+			[6]  = {61, 72},   -- MultiBarBottomLeft
+			[7]  = {73, 84},   -- Action Page 7
 			[8]  = {85, 96},   -- Action Page 8
 			[9]  = {97, 108},  -- Action Page 9
 			[10] = {109, 120}, -- Action Page 10
@@ -1141,7 +1154,18 @@ local ARS_ExitIgnoreBarMode
 local function GetBarButtons(barNum)
 	local buttons = {}
 
-	-- 1. Bartender4 support (Bar 1 = BT4Button1..12, Bar 2 = BT4Button13..24, etc.)
+	-- 1. Dominos support (DominosFrame1..10 -> .buttons table)
+	local domFrame = _G["DominosFrame" .. barNum] or (Dominos and Dominos.Frame and Dominos.Frame:Get(barNum))
+	if domFrame and domFrame.buttons then
+		for _, btn in ipairs(domFrame.buttons) do
+			if btn and btn:IsShown() and btn:IsVisible() then
+				tinsert(buttons, btn)
+			end
+		end
+		if #buttons > 0 then return buttons end
+	end
+
+	-- 2. Bartender4 support (Bar 1 = BT4Button1..12, Bar 2 = BT4Button13..24, etc.)
 	if _G["BT4Bar" .. barNum] then
 		local startIdx = (barNum - 1) * 12 + 1
 		for i = 0, 11 do
@@ -1153,7 +1177,7 @@ local function GetBarButtons(barNum)
 		if #buttons > 0 then return buttons end
 	end
 
-	-- 2. ElvUI support (ElvUI_Bar1Button1..12)
+	-- 3. ElvUI support (ElvUI_Bar1Button1..12)
 	if _G["ElvUI_Bar" .. barNum] then
 		for i = 1, 12 do
 			local btn = _G["ElvUI_Bar" .. barNum .. "Button" .. i]
@@ -1164,9 +1188,10 @@ local function GetBarButtons(barNum)
 		if #buttons > 0 then return buttons end
 	end
 
-	-- 3. Default Blizzard UI support (3.3.5a)
+	-- 4. Default Blizzard UI support (3.3.5a)
 	local blizzPrefixes = {
 		[1] = "ActionButton",
+		[2] = "BonusActionButton", -- Dominos uses BonusActionButton for Bar 2!
 		[3] = "MultiBarRightButton",
 		[4] = "MultiBarLeftButton",
 		[5] = "MultiBarBottomRightButton",

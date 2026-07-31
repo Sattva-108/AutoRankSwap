@@ -1139,26 +1139,52 @@ end
 -- Forward declaration so closures can reference it
 local ARS_ExitIgnoreBarMode
 
--- Map bar number → parent frame, supporting ElvUI, Bartender4, and Blizzard UI
-local function GetBarFrame(barNum)
-	-- 1. ElvUI support
-	local elvFrame = _G["ElvUI_Bar" .. barNum]
-	if elvFrame then return elvFrame end
+-- Helper: Get list of active visual button frames for a given bar number
+local function GetBarButtons(barNum)
+	local buttons = {}
 
-	-- 2. Bartender4 support
-	local btFrame = _G["BT4Bar" .. barNum]
-	if btFrame then return btFrame end
+	-- 1. Bartender4 support (Bar 1 = BT4Button1..12, Bar 2 = BT4Button13..24, etc.)
+	if _G["BT4Bar" .. barNum] then
+		local startIdx = (barNum - 1) * 12 + 1
+		for i = 0, 11 do
+			local btn = _G["BT4Button" .. (startIdx + i)]
+			if btn and btn:IsShown() and btn:IsVisible() then
+				tinsert(buttons, btn)
+			end
+		end
+		if #buttons > 0 then return buttons end
+	end
+
+	-- 2. ElvUI support (ElvUI_Bar1Button1..12)
+	if _G["ElvUI_Bar" .. barNum] then
+		for i = 1, 12 do
+			local btn = _G["ElvUI_Bar" .. barNum .. "Button" .. i]
+			if btn and btn:IsShown() and btn:IsVisible() then
+				tinsert(buttons, btn)
+			end
+		end
+		if #buttons > 0 then return buttons end
+	end
 
 	-- 3. Default Blizzard UI support (3.3.5a)
-	local blizzFrames = {
-		[1] = _G["ActionButton1"] and _G["ActionButton1"]:GetParent(), -- MainMenuBarArtFrame / MainMenuBar
-		[2] = nil, -- Page 2 usually overlayed on main bar
-		[3] = _G["MultiBarRight"],
-		[4] = _G["MultiBarLeft"],
-		[5] = _G["MultiBarBottomRight"],
-		[6] = _G["MultiBarBottomLeft"],
+	local blizzPrefixes = {
+		[1] = "ActionButton",
+		[3] = "MultiBarRightButton",
+		[4] = "MultiBarLeftButton",
+		[5] = "MultiBarBottomRightButton",
+		[6] = "MultiBarBottomLeftButton",
 	}
-	return blizzFrames[barNum]
+	local prefix = blizzPrefixes[barNum]
+	if prefix then
+		for i = 1, 12 do
+			local btn = _G[prefix .. i]
+			if btn and btn:IsShown() and btn:IsVisible() then
+				tinsert(buttons, btn)
+			end
+		end
+	end
+
+	return buttons
 end
 
 local function ARS_ToggleBarIgnore(barNum)
@@ -1186,95 +1212,93 @@ local function ARS_CreateHighlightFrames()
 	wipe(highlightFrames)
 
 	for barNum = 1, 10 do
-		local barFrame = GetBarFrame(barNum)
-
-		-- Fallback for Blizzard Bar 1 (MainMenuBar buttons 1..12 bounding box)
-		if not barFrame and barNum == 1 and _G["ActionButton1"] then
-			barFrame = _G["ActionButton1"]:GetParent()
-		end
-
-		if barFrame and barFrame:IsShown() and barFrame:IsVisible() then
-			local frame = CreateFrame("Frame", nil, barFrame)
-			frame:SetFrameStrata(barFrame:GetFrameStrata())
-			frame:SetFrameLevel(barFrame:GetFrameLevel() + 10)
-			frame:EnableMouse(true)
-			frame.barNum = barNum
-
-			-- Target exact bar bounding box or fallback to button 1..12 area
-			if barNum == 1 and not _G["ElvUI_Bar1"] and not _G["BT4Bar1"] then
-				-- Anchor specifically around ActionButton1 to ActionButton12 for default Blizzard UI
-				local firstBtn = _G["ActionButton1"]
-				local lastBtn = _G["ActionButton12"]
-				if firstBtn and lastBtn then
-					frame:SetPoint("TOPLEFT", firstBtn, "TOPLEFT", -2, 2)
-					frame:SetPoint("BOTTOMRIGHT", lastBtn, "BOTTOMRIGHT", 2, -2)
-				else
-					frame:SetAllPoints(barFrame)
+		local buttons = GetBarButtons(barNum)
+		if #buttons > 0 then
+			-- Calculate exact bounding box across all active buttons on screen
+			local left, right, top, bottom
+			for _, btn in ipairs(buttons) do
+				local l, b, w, h = btn:GetRect()
+				if l and b and w and h then
+					local r, t = l + w, b + h
+					left = left and math.min(left, l) or l
+					right = right and math.max(right, r) or r
+					bottom = bottom and math.min(bottom, b) or b
+					top = top and math.max(top, t) or t
 				end
-			else
-				frame:SetAllPoints(barFrame)
 			end
 
-			-- Green background overlay
-			frame.bg = frame:CreateTexture(nil, "BACKGROUND")
-			frame.bg:SetAllPoints()
-			frame.bg:SetTexture(0, 1, 0, 0.25)
-			frame.bg:Hide()
+			if left and right and top and bottom then
+				local frame = CreateFrame("Frame", nil, UIParent)
+				frame:SetFrameStrata("DIALOG")
+				frame:SetFrameLevel(100)
+				frame:EnableMouse(true)
+				frame.barNum = barNum
 
-			-- Green border
-			frame.border = frame:CreateTexture(nil, "BORDER")
-			frame.border:SetTexture(0, 1, 0, 0.9)
-			frame.border:SetAllPoints()
-			frame.border:SetBlendMode("ADD")
-			frame.border:Hide()
+				-- Position precisely over the buttons area on screen
+				frame:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", left - 3, bottom - 3)
+				frame:SetWidth((right - left) + 6)
+				frame:SetHeight((top - bottom) + 6)
 
-			-- OnEnter: show green highlight
-			frame:SetScript("OnEnter", function(self)
-				if not ARS.ignoreBarMode then return end
-				self.bg:Show()
-				self.border:Show()
+				-- Green background overlay
+				frame.bg = frame:CreateTexture(nil, "BACKGROUND")
+				frame.bg:SetAllPoints()
+				frame.bg:SetTexture(0, 1, 0, 0.25)
+				frame.bg:Hide()
 
-				-- CORRECT API: Use SetOwner instead of SetParent to avoid breaking GameTooltip structure
-				GameTooltip:SetOwner(self, "ANCHOR_TOP")
-				GameTooltip:ClearLines()
+				-- Green border
+				frame.border = frame:CreateTexture(nil, "BORDER")
+				frame.border:SetTexture(0, 1, 0, 0.9)
+				frame.border:SetAllPoints()
+				frame.border:SetBlendMode("ADD")
+				frame.border:Hide()
 
-				if ARS.ignoredBars[self.barNum] then
-					GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r", 1, 1, 0)
-					GameTooltip:AddLine("|cFF00FF00Already Ignored|r", 0, 1, 0)
-				else
-					GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r", 1, 1, 0)
-					GameTooltip:AddLine("|cFFFFFFFFLeft-Click to Ignore|r", 1, 1, 1)
-				end
-				GameTooltip:Show()
-			end)
+				-- OnEnter: show green highlight & safe GameTooltip
+				frame:SetScript("OnEnter", function(self)
+					if not ARS.ignoreBarMode then return end
+					self.bg:Show()
+					self.border:Show()
 
-			-- OnLeave: hide highlight
-			frame:SetScript("OnLeave", function(self)
-				self.bg:Hide()
-				self.border:Hide()
-				GameTooltip:Hide()
-			end)
+					GameTooltip:SetOwner(self, "ANCHOR_TOP")
+					GameTooltip:ClearLines()
 
-			-- OnMouseDown: left = ignore & exit, right = exit
-			frame:SetScript("OnMouseDown", function(self, button)
-				if not ARS.ignoreBarMode then return end
-				if button == "LeftButton" then
-					ARS_ToggleBarIgnore(self.barNum)
-					ARS_ExitIgnoreBarMode()
-				elseif button == "RightButton" then
-					ARS_ExitIgnoreBarMode()
-				end
-			end)
+					if ARS.ignoredBars[self.barNum] then
+						GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r", 1, 1, 0)
+						GameTooltip:AddLine("|cFF00FF00Already Ignored|r", 0, 1, 0)
+					else
+						GameTooltip:AddLine("|cFFFFFF00Bar " .. self.barNum .. "|r", 1, 1, 0)
+						GameTooltip:AddLine("|cFFFFFFFFLeft-Click to Ignore|r", 1, 1, 1)
+					end
+					GameTooltip:Show()
+				end)
 
-			-- OnKeyDown: ESC to exit
-			frame:SetScript("OnKeyDown", function(self, key)
-				if key == "ESCAPE" then
-					ARS_ExitIgnoreBarMode()
-				end
-			end)
+				-- OnLeave: hide highlight
+				frame:SetScript("OnLeave", function(self)
+					self.bg:Hide()
+					self.border:Hide()
+					GameTooltip:Hide()
+				end)
 
-			frame:Show()
-			tinsert(highlightFrames, frame)
+				-- OnMouseDown: left = ignore & exit, right = exit
+				frame:SetScript("OnMouseDown", function(self, button)
+					if not ARS.ignoreBarMode then return end
+					if button == "LeftButton" then
+						ARS_ToggleBarIgnore(self.barNum)
+						ARS_ExitIgnoreBarMode()
+					elseif button == "RightButton" then
+						ARS_ExitIgnoreBarMode()
+					end
+				end)
+
+				-- OnKeyDown: ESC to exit
+				frame:SetScript("OnKeyDown", function(self, key)
+					if key == "ESCAPE" then
+						ARS_ExitIgnoreBarMode()
+					end
+				end)
+
+				frame:Show()
+				tinsert(highlightFrames, frame)
+			end
 		end
 	end
 end

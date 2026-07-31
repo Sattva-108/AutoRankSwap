@@ -146,20 +146,18 @@ local function IsSlotInIgnoredBar(slot)
 			end
 		end
 
-		-- 3. Standard WotLK / Blizzard Page-to-Slot Mapping:
-		-- Bar 1 = 1-12   (Main Action Bar)
-		-- Bar 2 = 13-24  (Action Page 2)
-		-- Bar 3 = 25-36  (MultiBarRight - Right Action Bar)
-		-- Bar 4 = 37-48  (MultiBarLeft - Left Action Bar)
-		-- Bar 5 = 49-60  (MultiBarBottomRight - Bottom Right Bar)
-		-- Bar 6 = 61-72  (MultiBarBottomLeft - Bottom Left Bar)
+		-- 3. Standard WotLK / Blizzard Page-to-Slot Mapping (Bars 1..10 -> Slots 1..120):
 		local pageMap = {
-			[1] = {1, 12},
-			[2] = {13, 24},
-			[3] = {25, 36},
-			[4] = {37, 48},
-			[5] = {49, 60},
-			[6] = {61, 72},
+			[1]  = {1, 12},    -- Main Action Bar
+			[2]  = {13, 24},   -- Action Page 2
+			[3]  = {25, 36},   -- MultiBarRight (Right Action Bar)
+			[4]  = {37, 48},   -- MultiBarLeft (Left Action Bar)
+			[5]  = {49, 60},   -- MultiBarBottomRight (Bottom Right Bar)
+			[6]  = {61, 72},   -- MultiBarBottomLeft (Bottom Left Bar)
+			[7]  = {73, 84},   -- Action Page 7 / Stance Bar
+			[8]  = {85, 96},   -- Action Page 8
+			[9]  = {97, 108},  -- Action Page 9
+			[10] = {109, 120}, -- Action Page 10
 		}
 		local range = pageMap[barNum]
 		if range then
